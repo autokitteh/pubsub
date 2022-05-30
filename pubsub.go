@@ -11,7 +11,7 @@ type Subscriber interface {
 	Unsubscribe(context.Context) error
 
 	// Returns ErrUnsubscribed if unsubscribed.
-	Consume(_ context.Context) ([]byte, error)
+	Consume(context.Context) ([]byte, error)
 }
 
 type PubSub interface {
