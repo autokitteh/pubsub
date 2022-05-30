@@ -2,14 +2,15 @@ package pubsub
 
 import (
 	"context"
+	"errors"
 )
+
+var ErrUnsubscribed = errors.New("unsubscribed")
 
 type Subscriber interface {
 	Unsubscribe(context.Context) error
 
-	// Consume the next item. If previous item is unacked, it will be returned
-	// again. Every item can be acked at most once. This is designed so each
-	// subscriber is a single consumer.
+	// Returns ErrUnsubscribed if unsubscribed.
 	Consume(_ context.Context) (_ []byte, ack func(), _ error)
 }
 

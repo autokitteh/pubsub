@@ -9,32 +9,32 @@ import (
 	"github.com/autokitteh/pubsub"
 )
 
-type unacked struct {
-	id      int
-	payload []byte
-}
+const DefaultQueueSize = 32
 
 type subscriber struct {
-	mu      sync.Mutex
-	unacked *unacked
-	q       chan []byte
-	m       *inmem
-	topic   string
+	q     chan []byte
+	m     *inmem
+	topic string
 }
 
 type inmem struct {
 	mu     sync.RWMutex
 	topics map[string][]*subscriber
+	qSize  int
 }
 
 var _ pubsub.PubSub = &inmem{}
 
-func NewInMem() pubsub.PubSub {
-	return &inmem{topics: make(map[string][]*subscriber)}
+func NewInMem(qSize int) pubsub.PubSub {
+	if qSize == 0 {
+		qSize = DefaultQueueSize
+	}
+
+	return &inmem{topics: make(map[string][]*subscriber), qSize: qSize}
 }
 
 func (m *inmem) Subscribe(_ context.Context, topic string) (pubsub.Subscriber, error) {
-	s := &subscriber{topic: topic, q: make(chan []byte, 16), m: m}
+	s := &subscriber{topic: topic, q: make(chan []byte, m.qSize), m: m}
 
 	m.mu.Lock()
 	m.topics[topic] = append(m.topics[topic], s)
@@ -49,12 +49,12 @@ func (m *inmem) Publish(ctx context.Context, topic string, payload []byte) error
 
 	xs := m.topics[topic]
 
-	p := make([]byte, len(payload))
-	copy(p, payload)
-
-	wg, ctx1 := errgroup.WithContext(ctx)
+	wg, wgctx := errgroup.WithContext(ctx)
 
 	for _, x := range xs {
+		p := make([]byte, len(payload))
+		copy(p, payload)
+
 		x := x
 
 		wg.Go(func() error {
@@ -63,8 +63,8 @@ func (m *inmem) Publish(ctx context.Context, topic string, payload []byte) error
 				return nil
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-ctx1.Done():
-				return ctx1.Err()
+			case <-wgctx.Done():
+				return wgctx.Err()
 			}
 		})
 	}
@@ -73,19 +73,10 @@ func (m *inmem) Publish(ctx context.Context, topic string, payload []byte) error
 }
 
 func (s *subscriber) Unsubscribe(_ context.Context) error {
-	s.mu.Lock()
-
-	if s.m == nil {
-		s.mu.Unlock()
-		return nil
-	}
-
-	s.m = nil
-
-	s.mu.Unlock()
-
 	s.m.mu.Lock()
 	defer s.m.mu.Unlock()
+
+	close(s.q)
 
 	xs := s.m.topics[s.topic]
 	if xs == nil {
@@ -104,40 +95,15 @@ func (s *subscriber) Unsubscribe(_ context.Context) error {
 }
 
 func (s *subscriber) Consume(ctx context.Context) (payload []byte, ack func(), err error) {
-	s.mu.Lock()
-
-	if unacked := s.unacked; unacked != nil {
-		s.mu.Unlock()
-
-		ack = func() {
-			s.mu.Lock()
-			defer s.mu.Unlock()
-
-			if s.unacked != unacked || s.unacked.id != unacked.id {
-				panic("already acked or corrupted")
-			}
-
-			s.unacked = nil
-		}
-
-		payload = s.unacked.payload
-		return
-	}
-
 	select {
 	case x := <-s.q:
-		s.unacked = &unacked{
-			payload: x,
-			id:      0,
+		if x == nil {
+			return nil, nil, pubsub.ErrUnsubscribed
 		}
 
-		s.mu.Unlock()
-
-		return s.Consume(ctx)
+		return x, func() {}, nil
 
 	case <-ctx.Done():
-		s.mu.Unlock()
-
 		err = ctx.Err()
 	}
 
