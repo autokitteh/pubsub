@@ -25,7 +25,7 @@ type inmem struct {
 
 var _ pubsub.PubSub = &inmem{}
 
-func NewInMem(qSize int) pubsub.PubSub {
+func New(qSize int) pubsub.PubSub {
 	if qSize == 0 {
 		qSize = DefaultQueueSize
 	}
@@ -94,18 +94,16 @@ func (s *subscriber) Unsubscribe(_ context.Context) error {
 	panic("subscriber not found in parent topic")
 }
 
-func (s *subscriber) Consume(ctx context.Context) (payload []byte, ack func(), err error) {
+func (s *subscriber) Consume(ctx context.Context) ([]byte, error) {
 	select {
 	case x := <-s.q:
 		if x == nil {
-			return nil, nil, pubsub.ErrUnsubscribed
+			return nil, pubsub.ErrUnsubscribed
 		}
 
-		return x, func() {}, nil
+		return x, nil
 
 	case <-ctx.Done():
-		err = ctx.Err()
+		return nil, ctx.Err()
 	}
-
-	return
 }
